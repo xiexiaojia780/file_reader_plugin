@@ -1,0 +1,35 @@
+# Python 字节码缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 类型检查器缓存
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+
+# 日志 / 本地数据 / 密钥
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+# 系统文件
+.DS_Store
+Thumbs.db

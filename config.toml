@@ -1,0 +1,66 @@
+[plugin]
+enabled = true
+config_version = "1.2.8"
+
+[napcat]
+# NapCat OneBot HTTP 服务地址（需在 NapCat 中开启 HTTP）
+http_base_url = "http://127.0.0.1:3000"
+# NapCat access token；未设置则留空
+access_token = ""
+
+[access]
+# 访问模式（WebUI 下拉可选）：
+# - all：所有人可用
+# - whitelist：仅白名单用户可用
+# - blacklist：除黑名单外都可用
+access_mode = "all"
+# 白名单（access_mode=whitelist 时生效），支持 QQ 号或 qq:号
+user_whitelist = ""
+# 黑名单（access_mode=blacklist 时生效）
+user_blacklist = ""
+# 被拒绝时的提示
+deny_message = "你没有权限使用文件阅读功能。"
+# true=拒绝时不回复提示（仍拦截命令）
+silent_deny = false
+
+[read]
+# 读入文件的最大字符数，超出部分截断，避免上下文过长
+max_chars = 20000
+# 允许下载/读取的最大文件字节数（默认约 5MB）
+max_download_bytes = 5000000
+# 下载与 NapCat / 外部 API 请求超时（秒）
+timeout_seconds = 30
+# 用户未写要求时的默认处理指令
+default_requirement = "概括这个文件的主要内容"
+# 扩展名白名单（逗号分隔）。非空=只允许这些；留空=不限制白名单（仍看黑名单）
+extension_whitelist = ".txt,.md,.markdown,.json,.log,.csv,.tsv,.yml,.yaml,.toml,.ini,.cfg,.py,.js,.ts,.jsx,.tsx,.java,.go,.rs,.c,.cpp,.h,.hpp,.cs,.php,.rb,.sh,.bash,.zsh,.ps1,.sql,.html,.htm,.css,.xml,.vue,.svelte"
+# 扩展名黑名单（命中即拒绝，优先于白名单）
+extension_blacklist = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.ico,.mp3,.mp4,.wav,.avi,.mov,.zip,.rar,.7z,.tar,.gz,.exe,.dll,.bin,.apk,.dmg,.iso"
+# 白名单非空且无法识别扩展名时是否拒绝（false=允许继续按纯文本尝试）
+reject_unknown_extension = false
+# 可选：追加到内置固定 system 后的自定义说明（改动会打断该段缓存）
+fixed_system_instruction = ""
+# 是否把「概括/待办/讲代码」等短口令映射成稳定任务模板
+use_requirement_templates = true
+# 是否附带固定 tools 定义（稳定前缀；默认开启）
+use_fixed_tools = true
+# 处理完成后输出 cache 命中统计（默认写日志）
+report_cache_stats = true
+# 是否把 cache 统计也发到聊天（默认 false）
+report_cache_stats_to_chat = false
+
+[model]
+# host = 使用宿主任务模型；external = 插件直调 OpenAI/Anthropic 兼容接口
+mode = "host"
+# host 模式：任务名（如 replyer / planner / utils），留空使用宿主默认
+task_name = ""
+# external 模式：协议 openai 或 anthropic
+provider = "openai"
+# external 模式：API Base URL
+# - openai 兼容：https://api.openai.com/v1 或中转站 /v1
+# - anthropic：https://api.anthropic.com（可带 /v1，不会重复拼接）
+api_base_url = "https://api.openai.com/v1"
+api_key = ""
+model_name = "gpt-4o-mini"
+temperature = 0.7
+max_tokens = 2048
