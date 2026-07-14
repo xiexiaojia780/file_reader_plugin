@@ -9,7 +9,7 @@
   },
   "license": "GPL-3.0-or-later",
   "urls": {
-    "repository": "https://github.com/xiexiaojia780/file-reader-plugin"
+    "repository": "https://github.com/xiexiaojia780/file_reader_plugin"
   },
   "host_application": {
     "min_version": "1.0.0",

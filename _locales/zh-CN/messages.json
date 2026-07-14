@@ -3,7 +3,7 @@
     "message": "文件阅读插件"
   },
   "plugin_description": {
-    "message": "通过指令下载指定文件（NapCat file_id 或链接），按纯文本读取后交给 LLM 处理并回复"
+    "message": "通过指令或引用文件消息读取纯文本文件，交给 LLM 按要求处理后回复"
   },
   "command_usage": {
     "message": "用法：/读文件 <文件ID或链接> [要求]；或先引用文件消息再发 /读文件 [要求]"

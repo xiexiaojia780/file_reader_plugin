@@ -19,7 +19,9 @@ env/
 *.swp
 
 # 日志 / 本地数据 / 密钥
+logs/
 *.log
+*.log.jsonl
 *.db
 *.sqlite
 *.sqlite3
