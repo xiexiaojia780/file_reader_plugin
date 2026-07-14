@@ -90,14 +90,14 @@ file_reader_plugin/
 ## 安装
 
 1. 放到 MaiBot 的 `plugins/` 目录。
-2. 重启或热重载。
+2. 重启 Maibot 或等待其热重载。
 3. 依赖由 `_manifest.json` 自动安装；也可手动：
 
 ```bash
 pip install "aiohttp>=3.8" "charset-normalizer>=3.0"
 ```
 
-4. 若要用 NapCat `file_id`：在 NapCat 开启 **OneBot HTTP**，并填写下方 `[napcat]` 配置。
+4. 若要用 NapCat `file_id`：在 NapCat 开启 **HTTP服务器**，并填写下方 `[napcat]` 配置。
 
 > **WebSocket 说明：** 本插件取文件只走 HTTP（`POST {http_base_url}/get_file`），**不需要单独为它再开 WebSocket**。  
 > WebSocket 是 MaiBot / napcat-adapter 收发 QQ 消息用的；机器人能正常聊天时通常已经开着，与 file_reader 的 `file_id` 取文件无关。  
