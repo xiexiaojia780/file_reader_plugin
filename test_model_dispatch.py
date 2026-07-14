@@ -637,55 +637,6 @@ async def test_user_access_blocks_handler() -> None:
     print(f"[user-block-handler] OK：{msg}")
 
 
-async def test_extension_policy() -> None:
-    print("[ext-policy] 启动")
-    plugin = _make_plugin(_host_model())
-    # 默认白名单含 .py，黑名单含 .pdf
-    ok, reason = plugin._check_extension_policy("https://x.com/a.py")
-    assert ok and reason == ""
-    ok, reason = plugin._check_extension_policy("notes.PDF")
-    assert not ok and ".pdf" in reason
-    ok, reason = plugin._check_extension_policy("slide.pptx")
-    assert not ok and ".pptx" in reason
-
-    # 自定义：只允许 .txt
-    plugin.config.read.extension_whitelist = ".txt"
-    plugin.config.read.extension_blacklist = ".md"
-    ok, reason = plugin._check_extension_policy("a.txt")
-    assert ok
-    ok, reason = plugin._check_extension_policy("a.md")
-    assert not ok
-    ok, reason = plugin._check_extension_policy("a.py")
-    assert not ok and "白名单" in reason
-
-    # 未知扩展名 + reject_unknown
-    plugin.config.read.extension_whitelist = ".txt"
-    plugin.config.read.reject_unknown_extension = True
-    ok, reason = plugin._check_extension_policy("no_suffix_fileid")
-    assert not ok and "无法识别" in reason
-
-    # 魔数
-    assert plugin._guess_extension_from_magic(b"%PDF-1.7...") == ".pdf"
-    assert plugin._guess_extension_from_magic(b"\x89PNG\r\n\x1a\nxxxx") == ".png"
-    assert plugin._guess_extension_from_magic(b"hello text") == ""
-    print("[ext-policy] OK")
-
-
-async def test_extension_policy_blocks_handler() -> None:
-    print("[ext-block-handler] 启动")
-    plugin = _make_plugin(_host_model())
-    plugin.config.read.extension_blacklist = ".pdf"
-    plugin.config.read.extension_whitelist = ""
-    ok, msg, intercept = await _run_handler(plugin, body="https://example.com/a.pdf 概括")
-    assert not ok and intercept >= 1
-    assert "扩展名" in msg or "pdf" in msg.lower()
-    plugin._fetch_file_bytes = AsyncMock()  # type: ignore[method-assign]
-    # 上面 handler 已返回，不应下载；这里只确认消息
-    sent = " ".join(str(c.args[0]) for c in plugin.ctx.send.text.await_args_list if c.args)
-    assert "不允许" in sent or "黑名单" in sent or "pdf" in sent.lower()
-    print(f"[ext-block-handler] OK：{msg}")
-
-
 async def test_cache_stats_formatting() -> None:
     print("[cache-stats] 启动")
     plugin = _make_plugin(_host_model())
@@ -818,8 +769,6 @@ async def main() -> None:
     await test_prompt_cache_friendly_order()
     await test_user_access_policy()
     await test_user_access_blocks_handler()
-    await test_extension_policy()
-    await test_extension_policy_blocks_handler()
     await test_cache_stats_formatting()
     await test_extract_tool_call_response()
     await test_external_mode()

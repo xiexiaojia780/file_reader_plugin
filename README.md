@@ -74,16 +74,12 @@ file_reader_plugin/
 
 ### 限制说明
 
-- **仅纯文本**：`.txt` / `.md` / `.json` / `.log` / 源码等。PDF、Word、Excel、图片等**不会**被解析。
+- **仅纯文本**：按文本解码读取；`.txt` / `.md` / `.json` / `.log` / 源码等可用。PDF、Word、Excel、图片等二进制内容**不会**被解析（通常会提示无法按文本读取）。
 - **用户权限**（`[access]`，WebUI 里有「访问模式」下拉框）：
   - `access_mode=all`：所有人可用（默认，名单可留空）
   - `access_mode=whitelist`：仅白名单用户可用 → 填 `user_whitelist`
   - `access_mode=blacklist`：黑名单用户禁用，其他人可用 → 填 `user_blacklist`
   - ID 写法：`123456` 或 `qq:123456`，逗号/换行分隔
-- **扩展名黑白名单**（`read.extension_whitelist` / `extension_blacklist`）：
-  - 黑名单命中 → 直接拒绝
-  - 白名单非空且未命中 → 拒绝
-  - 无法识别扩展名时：默认仍尝试读取；`reject_unknown_extension=true` 则拒绝
 - 超过 `read.max_chars` 会截断，并在 prompt 中注明「仅为前部分」。
 - 下载/读取超过 `read.max_download_bytes` 会报错。
 
@@ -130,9 +126,6 @@ max_chars = 20000
 max_download_bytes = 5000000
 timeout_seconds = 30
 default_requirement = "概括这个文件的主要内容"
-extension_whitelist = ".txt,.md,.json,.log,.py,..."   # 非空=只允许这些
-extension_blacklist = ".pdf,.docx,.png,.zip,.exe,..." # 命中即拒
-reject_unknown_extension = false
 fixed_system_instruction = ""      # 可选自定义固定说明
 use_requirement_templates = true   # 短口令映射稳定任务模板
 use_fixed_tools = true             # 固定 tools 定义，利于前缀稳定
@@ -182,16 +175,12 @@ python test_model_dispatch.py
 
 - 用户权限改为**下拉选项**：`access_mode = all / whitelist / blacklist`
 - WebUI 字段补充中文 label/hint，更方便点选
+- 移除文件扩展名黑白名单（`extension_whitelist` / `extension_blacklist` / `reject_unknown_extension`）；仍按纯文本解码，二进制文件会提示无法读取
 
 ### 1.2.7
 
 - 新增**用户**黑白名单：`access.user_whitelist` / `user_blacklist` / `deny_message` / `silent_deny`
 - 支持 `qq:123456` 与纯数字 ID
-
-### 1.2.6
-
-- 新增扩展名**黑白名单**：`extension_whitelist` / `extension_blacklist` / `reject_unknown_extension`
-- URL 下载前按后缀拦截；无后缀时可用文件头（PDF/PNG/ZIP 等）做二次黑名单判断
 
 ### 1.2.5
 

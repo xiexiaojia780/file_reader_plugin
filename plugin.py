@@ -249,20 +249,6 @@ class ReadConfig(PluginConfigBase):
     max_download_bytes: int = Field(default=5_000_000, ge=1024, description="允许下载的最大文件字节数")
     timeout_seconds: int = Field(default=30, ge=1, description="下载与 NapCat / 外部 API 请求的超时时间（秒）")
     default_requirement: str = Field(default="概括这个文件的主要内容", description="用户未提供要求时使用的默认要求")
-    # 扩展名黑白名单：逗号分隔，如 ".txt,.md,.py"；比较时忽略大小写，可带或不带点
-    # 规则：若 whitelist 非空，必须命中白名单；无论是否有白名单，命中 blacklist 一律拒绝
-    extension_whitelist: str = Field(
-        default=".txt,.md,.markdown,.json,.log,.csv,.tsv,.yml,.yaml,.toml,.ini,.cfg,.py,.js,.ts,.jsx,.tsx,.java,.go,.rs,.c,.cpp,.h,.hpp,.cs,.php,.rb,.sh,.bash,.zsh,.ps1,.sql,.html,.htm,.css,.xml,.vue,.svelte",
-        description="允许的文件扩展名白名单（逗号分隔）。非空时只允许这些后缀；留空表示不限制白名单（仍受黑名单约束）",
-    )
-    extension_blacklist: str = Field(
-        default=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.ico,.mp3,.mp4,.wav,.avi,.mov,.zip,.rar,.7z,.tar,.gz,.exe,.dll,.bin,.apk,.dmg,.iso",
-        description="禁止的文件扩展名黑名单（逗号分隔）。命中即拒绝，优先级高于白名单",
-    )
-    reject_unknown_extension: bool = Field(
-        default=False,
-        description="当白名单非空且无法从 URL/文件名识别扩展名时，是否拒绝（false=允许继续尝试按纯文本读取）",
-    )
     fixed_system_instruction: str = Field(
         default="",
         description="可选：追加到固定 system 前缀后的自定义说明（留空则只用内置固定说明）。改动会打断该段缓存",
@@ -443,13 +429,6 @@ class FileReaderPlugin(MaiBotPlugin):
             )
             return False, "external 模式缺少 api_key", intercept_level
 
-        # 0. 扩展名黑白名单（能从 URL/标识识别后缀时，下载前先拦）
-        guessed_name = self._guess_filename_from_ref(file_ref, message)
-        allowed, deny_reason = self._check_extension_policy(guessed_name)
-        if not allowed:
-            await self._reply_text(f"文件类型不允许：{deny_reason}", stream_id)
-            return False, f"扩展名拒绝: {deny_reason}", intercept_level
-
         # 1. 取文件字节
         try:
             file_bytes, source_desc = await self._fetch_file_bytes(file_ref)
@@ -457,15 +436,6 @@ class FileReaderPlugin(MaiBotPlugin):
             self.ctx.logger.warning("获取文件失败 file_ref=%s: %s", file_ref, exc)
             await self._reply_text(f"获取文件失败：{exc}", stream_id)
             return False, f"获取文件失败: {exc}", intercept_level
-
-        # 1.5 若下载前无法识别后缀，尝试从内容魔数做二次黑名单拦截
-        if not self._extract_extension(guessed_name):
-            magic_ext = self._guess_extension_from_magic(file_bytes)
-            if magic_ext:
-                allowed, deny_reason = self._check_extension_policy(f"file{magic_ext}")
-                if not allowed:
-                    await self._reply_text(f"文件类型不允许：{deny_reason}", stream_id)
-                    return False, f"扩展名拒绝: {deny_reason}", intercept_level
 
         # 2. 按纯文本解码
         text_content, truncated = self._decode_text(file_bytes)
@@ -625,138 +595,6 @@ class FileReaderPlugin(MaiBotPlugin):
         if candidates & whitelist:
             return True, ""
         return False, "用户不在白名单中"
-
-    # ------------------------------------------------------------------
-    # 扩展名黑白名单
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_extension_list(raw: str) -> set[str]:
-        """解析逗号分隔扩展名列表，归一成带点小写形式，如 ``.txt``。"""
-
-        result: set[str] = set()
-        for part in str(raw or "").split(","):
-            item = part.strip().lower()
-            if not item:
-                continue
-            if not item.startswith("."):
-                item = f".{item}"
-            # 过滤异常值
-            if item == "." or "/" in item or "\\" in item or " " in item:
-                continue
-            result.add(item)
-        return result
-
-    @staticmethod
-    def _extract_extension(filename_or_url: str) -> str:
-        """从文件名或 URL 路径中提取扩展名（小写、带点）；没有则返回空串。"""
-
-        text = str(filename_or_url or "").strip()
-        if not text:
-            return ""
-
-        # URL：只看 path，去掉 query/fragment
-        if "://" in text:
-            parsed = urlparse(text)
-            text = parsed.path or text
-
-        # 去掉末尾斜杠与 query 残留
-        text = text.split("?", 1)[0].split("#", 1)[0].rstrip("/\\")
-        name = Path(text).name
-        if not name or name in {".", ".."}:
-            return ""
-        # 处理 .gitignore 这类“全名即扩展”的隐藏文件：不当扩展名
-        if name.startswith(".") and name.count(".") == 1:
-            return ""
-        suffix = Path(name).suffix.lower()
-        return suffix if suffix.startswith(".") and len(suffix) > 1 else ""
-
-    def _guess_filename_from_ref(self, file_ref: str, message: dict[str, Any] | None = None) -> str:
-        """尽量从 file_ref / 当前消息文件段猜测文件名，用于扩展名策略。"""
-
-        ref = str(file_ref or "").strip()
-        if self._is_http_url(ref):
-            path_name = Path(urlparse(ref).path).name
-            if path_name:
-                return path_name
-
-        # 引用消息场景：从本条/原始消息段里抠 name/file
-        if isinstance(message, dict):
-            for segment in self._iter_message_segments(message):
-                if not isinstance(segment, dict):
-                    continue
-                data = segment.get("data")
-                candidates: list[Any] = []
-                if isinstance(data, dict):
-                    candidates.append(data)
-                    inner = data.get("data")
-                    if isinstance(inner, dict):
-                        candidates.append(inner)
-                for item in candidates:
-                    for key in ("name", "file_name", "filename", "file"):
-                        value = str(item.get(key) or "").strip()
-                        if value and not self._is_http_url(value):
-                            # 只要看起来带后缀
-                            if self._extract_extension(value):
-                                return Path(value).name
-        # file_id 本身通常没有扩展名
-        if self._extract_extension(ref):
-            return Path(ref).name
-        return ""
-
-    @staticmethod
-    def _guess_extension_from_magic(file_bytes: bytes) -> str:
-        """用简单文件头猜测常见二进制类型；未知返回空串。"""
-
-        if not file_bytes:
-            return ""
-        head = file_bytes[:16]
-        if head.startswith(b"%PDF"):
-            return ".pdf"
-        if head.startswith(b"PK\x03\x04"):
-            # zip 容器：docx/xlsx/pptx/jar 等，统一按 zip 族黑名单处理
-            return ".zip"
-        if head.startswith(b"\x89PNG\r\n\x1a\n"):
-            return ".png"
-        if head.startswith(b"\xff\xd8\xff"):
-            return ".jpg"
-        if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):
-            return ".gif"
-        if head.startswith(b"RIFF") and b"WEBP" in file_bytes[:16]:
-            return ".webp"
-        if head.startswith(b"Rar!\x1a\x07"):
-            return ".rar"
-        if head.startswith(b"\x1f\x8b"):
-            return ".gz"
-        if head.startswith(b"MZ"):
-            return ".exe"
-        return ""
-
-    def _check_extension_policy(self, filename_or_url: str) -> tuple[bool, str]:
-        """按黑白名单检查扩展名。
-
-        Returns:
-            tuple[bool, str]: ``(是否允许, 拒绝原因；允许时原因为空)``
-        """
-
-        whitelist = self._parse_extension_list(self.config.read.extension_whitelist)
-        blacklist = self._parse_extension_list(self.config.read.extension_blacklist)
-        ext = self._extract_extension(filename_or_url)
-
-        if not ext:
-            if whitelist and self.config.read.reject_unknown_extension:
-                return False, "无法识别扩展名，且已开启 reject_unknown_extension"
-            return True, ""
-
-        if ext in blacklist:
-            return False, f"{ext} 在黑名单中"
-
-        if whitelist and ext not in whitelist:
-            allowed_preview = ", ".join(sorted(whitelist)[:12])
-            more = "" if len(whitelist) <= 12 else " ..."
-            return False, f"{ext} 不在白名单中（允许：{allowed_preview}{more}）"
-
-        return True, ""
 
     # ------------------------------------------------------------------
     # 命令参数 / 引用消息解析

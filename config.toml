@@ -32,12 +32,6 @@ max_download_bytes = 5000000
 timeout_seconds = 30
 # 用户未写要求时的默认处理指令
 default_requirement = "概括这个文件的主要内容"
-# 扩展名白名单（逗号分隔）。非空=只允许这些；留空=不限制白名单（仍看黑名单）
-extension_whitelist = ".txt,.md,.markdown,.json,.log,.csv,.tsv,.yml,.yaml,.toml,.ini,.cfg,.py,.js,.ts,.jsx,.tsx,.java,.go,.rs,.c,.cpp,.h,.hpp,.cs,.php,.rb,.sh,.bash,.zsh,.ps1,.sql,.html,.htm,.css,.xml,.vue,.svelte"
-# 扩展名黑名单（命中即拒绝，优先于白名单）
-extension_blacklist = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp,.ico,.mp3,.mp4,.wav,.avi,.mov,.zip,.rar,.7z,.tar,.gz,.exe,.dll,.bin,.apk,.dmg,.iso"
-# 白名单非空且无法识别扩展名时是否拒绝（false=允许继续按纯文本尝试）
-reject_unknown_extension = false
 # 可选：追加到内置固定 system 后的自定义说明（改动会打断该段缓存）
 fixed_system_instruction = ""
 # 是否把「概括/待办/讲代码」等短口令映射成稳定任务模板
