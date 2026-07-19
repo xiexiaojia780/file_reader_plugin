@@ -1,12 +1,16 @@
 [plugin]
 enabled = true
-config_version = "1.2.8"
+config_version = "1.2.9"
 
 [napcat]
 # NapCat OneBot HTTP 服务地址（需在 NapCat 中开启 HTTP）
 http_base_url = "http://127.0.0.1:3000"
 # NapCat access token；未设置则留空
 access_token = ""
+# 允许读取本地路径的目录前缀（逗号分隔）。留空=禁止本地路径，只接受 base64/url。
+# 默认仅临时目录；请按实际 NapCat 缓存目录收紧，不要写 C:\Users 这类过宽前缀。
+# get_file 走裸 HTTP（不经 SDK），http_base_url 请只指向可信本机 NapCat。
+allowed_local_prefixes = "/tmp,/var/tmp,C:\\Windows\\Temp"
 
 [access]
 # 访问模式（WebUI 下拉可选）：
@@ -42,6 +46,10 @@ use_fixed_tools = true
 report_cache_stats = true
 # 是否把 cache 统计也发到聊天（默认 false）
 report_cache_stats_to_chat = false
+# 拦截用户提供的私有/本地 URL（防 SSRF：127.0.0.1、10.x、192.168.x、169.254.x 等）
+block_private_urls = true
+# 可选：仅允许这些主机名被用户 URL 下载（逗号分隔）；留空=不额外限制主机名
+url_allowed_hosts = ""
 
 [model]
 # host = 使用宿主任务模型；external = 插件直调 OpenAI/Anthropic 兼容接口

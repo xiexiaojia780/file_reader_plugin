@@ -11,9 +11,11 @@
 要求：可选，省略时默认「概括文件主要内容」。
 
 取文件方式：
-- http(s) 链接：插件直接下载
+- http(s) 链接：插件直接下载（默认拦截私有/本地地址，防 SSRF）
 - 引用消息：从 reply 的 target_message_id 调 NapCat ``get_msg``，再取 file_id/url
 - 其余按 NapCat file_id：OneBot HTTP ``get_file``（需开启 HTTP，**不走 WebSocket**）
+  说明：``get_file`` 因 base64/文件体较大，当前仍走裸 HTTP，未经过 SDK 能力层；
+  若后续 SDK 提供文件下载通道，应优先迁移。
 
 限制：仅支持纯文本类文件。PDF/Office/图片等不会被解析。
 
@@ -22,24 +24,44 @@
 
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import base64 as base64_module
+import ipaddress
+import socket
 
 from charset_normalizer import from_bytes
+from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase
 
 import aiohttp
 
-from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase
-
-# 本地路径读取白名单：仅允许落在这些目录下（NapCat 缓存/临时目录常见位置）。
-# 空列表表示拒绝一切本地路径，强制走 base64/url，避免任意文件读取。
+# 本地路径读取白名单：仅允许落在这些**临时目录**下（NapCat 缓存常见位置）。
+# 默认不再包含 C:\\Users 等用户目录（范围过宽）；需要时请在配置中显式追加。
+# 空列表 / 配置留空表示拒绝一切本地路径，强制走 base64/url，避免任意文件读取。
 _DEFAULT_LOCAL_PATH_PREFIXES: tuple[str, ...] = (
     "/tmp",
     "/var/tmp",
     "C:\\Windows\\Temp",
-    "C:\\Users",
 )
+
+# 用户 URL 下载时额外拦截的特殊主机名（解析前即可拒绝）
+_BLOCKED_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+    }
+)
+
+# 额外视为不可达公网的网段（Python ipaddress 未全部标为 private 的也拦）
+_EXTRA_BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT / 运营商级 NAT
+    ipaddress.ip_network("0.0.0.0/8"),
+)
+
+_MAX_DOWNLOAD_REDIRECTS = 5
 
 # 用于从引用消息拉取原消息（短名；Host 可解析到 napcat-adapter 公开 API）
 _GET_MSG_API_CANDIDATES: tuple[str, ...] = (
@@ -131,7 +153,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="1.2.8", description="配置版本")
+    config_version: str = Field(default="1.2.9", description="配置版本")
 
 
 class NapcatConfig(PluginConfigBase):
@@ -148,7 +170,16 @@ class NapcatConfig(PluginConfigBase):
     access_token: str = Field(default="", description="NapCat 配置的 access token，未设置则留空")
     allowed_local_prefixes: str = Field(
         default=",".join(_DEFAULT_LOCAL_PATH_PREFIXES),
-        description="NapCat 返回本地路径时允许读取的目录前缀，逗号分隔；留空则禁止本地路径读取",
+        description=(
+            "NapCat 返回本地路径时允许读取的目录前缀，逗号分隔；留空则禁止本地路径读取。"
+            "默认仅临时目录（/tmp、/var/tmp、C:\\Windows\\Temp），"
+            "不要轻易加入 C:\\Users 等过宽前缀"
+        ),
+        json_schema_extra={
+            "label": "本地路径白名单",
+            "hint": "默认仅临时目录；需要读 NapCat 缓存时可追加具体目录，勿直接写 C:\\Users",
+            "placeholder": "/tmp,/var/tmp,C:\\Windows\\Temp",
+        },
     )
 
 
@@ -268,6 +299,32 @@ class ReadConfig(PluginConfigBase):
     report_cache_stats_to_chat: bool = Field(
         default=False,
         description="是否把 cache 命中率也发到聊天（默认 false，避免刷屏；true 时追加一条统计消息）",
+    )
+    block_private_urls: bool = Field(
+        default=True,
+        description=(
+            "是否拦截用户提供的私有/本地 URL（防 SSRF）。"
+            "true=拒绝 127.0.0.1、10.x、192.168.x、169.254.x、localhost 等；"
+            "false=允许（仅可信环境）"
+        ),
+        json_schema_extra={
+            "label": "拦截私有 URL",
+            "hint": "默认开启，防止 /读文件 被用来访问内网或云元数据",
+            "x-widget": "switch",
+        },
+    )
+    url_allowed_hosts: str = Field(
+        default="",
+        description=(
+            "可选：仅允许下载这些主机名（逗号/换行分隔，如 cdn.example.com）。"
+            "留空=不额外限制主机名（仍受 block_private_urls 约束）"
+        ),
+        json_schema_extra={
+            "label": "URL 主机白名单",
+            "placeholder": "cdn.example.com,files.example.org",
+            "hint": "留空不限制；填写后仅这些主机可被用户 URL 下载",
+            "rows": 2,
+        },
     )
 
 
@@ -862,7 +919,8 @@ class FileReaderPlugin(MaiBotPlugin):
         """根据文件标识获取文件字节"""
 
         if self._is_http_url(file_ref):
-            return await self._download_url(file_ref), f"url:{file_ref}"
+            # 用户提供的 URL：强制走 SSRF 校验
+            return await self._download_url(file_ref, enforce_ssrf=True), f"url:{file_ref}"
 
         return await self._fetch_via_napcat(file_ref), f"napcat:{file_ref}"
 
@@ -873,21 +931,138 @@ class FileReaderPlugin(MaiBotPlugin):
         parsed = urlparse(value)
         return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
-    async def _download_url(self, url: str) -> bytes:
-        """下载 http(s) 直链文件"""
+    @staticmethod
+    def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        """判断 IP 是否属于私有/本地/链路本地/保留等不可公网访问地址。"""
+
+        if any(
+            (
+                ip.is_private,
+                ip.is_loopback,
+                ip.is_link_local,
+                ip.is_multicast,
+                ip.is_reserved,
+                ip.is_unspecified,
+            )
+        ):
+            return True
+        # IPv6 唯一本地地址 (fc00::/7) 在部分版本未标 private
+        if isinstance(ip, ipaddress.IPv6Address) and (ip.packed[0] & 0xFE) == 0xFC:
+            return True
+        for network in _EXTRA_BLOCKED_NETWORKS:
+            if ip in network:
+                return True
+        return False
+
+    def _validate_download_url(self, url: str, *, enforce_ssrf: bool) -> str:
+        """校验下载 URL，必要时拦截私有/本地目标（SSRF 防护）。
+
+        Args:
+            url: 待下载 URL。
+            enforce_ssrf: 是否执行私有地址与主机白名单校验。
+
+        Returns:
+            str: 规范化后的 URL 字符串。
+
+        Raises:
+            ValueError: URL 非法或目标被策略拒绝。
+        """
+
+        text = str(url or "").strip()
+        if not self._is_http_url(text):
+            raise ValueError("仅支持 http(s) URL 下载")
+
+        parsed = urlparse(text)
+        if parsed.username or parsed.password:
+            raise ValueError("下载 URL 不允许携带用户名/密码")
+
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not hostname:
+            raise ValueError("下载 URL 缺少主机名")
+
+        if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(".localhost"):
+            if enforce_ssrf and self.config.read.block_private_urls:
+                raise ValueError(f"拒绝访问本地/特殊主机：{hostname}")
+
+        # 可选主机白名单（仅 enforce_ssrf 时生效，避免误伤 NapCat 内网 URL 兜底）
+        if enforce_ssrf:
+            allowed_hosts = self._parse_id_list(self.config.read.url_allowed_hosts)
+            if allowed_hosts and hostname not in allowed_hosts:
+                raise ValueError(f"主机不在 URL 白名单中：{hostname}")
+
+        # 字面量 IP：直接判断，不经过 DNS
+        try:
+            literal_ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            literal_ip = None
+
+        if literal_ip is not None:
+            if enforce_ssrf and self.config.read.block_private_urls and self._is_blocked_ip(literal_ip):
+                raise ValueError(f"拒绝访问私有/本地地址：{hostname}")
+            return text
+
+        if not (enforce_ssrf and self.config.read.block_private_urls):
+            return text
+
+        # DNS 解析后检查所有 A/AAAA，防止 DNS rebinding 到内网
+        try:
+            addrinfo = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+        except socket.gaierror as exc:
+            raise ValueError(f"无法解析主机名：{hostname}") from exc
+
+        if not addrinfo:
+            raise ValueError(f"无法解析主机名：{hostname}")
+
+        for info in addrinfo:
+            ip_text = info[4][0]
+            try:
+                ip_obj = ipaddress.ip_address(ip_text)
+            except ValueError:
+                continue
+            if self._is_blocked_ip(ip_obj):
+                raise ValueError(f"拒绝访问解析到私有/本地地址的主机：{hostname} -> {ip_text}")
+
+        return text
+
+    async def _download_url(self, url: str, *, enforce_ssrf: bool = True) -> bytes:
+        """下载 http(s) 直链文件。
+
+        Args:
+            url: 目标 URL。
+            enforce_ssrf: 是否拦截私有/本地地址。用户提供的 URL 必须为 True；
+                NapCat ``get_file`` 返回的 url 通常指向本机/缓存服务，传 False。
+        """
 
         read_config = self.config.read
+        current_url = self._validate_download_url(url, enforce_ssrf=enforce_ssrf)
         timeout = aiohttp.ClientTimeout(total=read_config.timeout_seconds)
+
+        # 手动跟随重定向，每跳都重新校验目标，避免 302 跳进内网
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                return await self._read_capped(response, read_config.max_download_bytes)
+            for _ in range(_MAX_DOWNLOAD_REDIRECTS + 1):
+                async with session.get(current_url, allow_redirects=False) as response:
+                    if response.status in {301, 302, 303, 307, 308}:
+                        location = str(response.headers.get("Location") or "").strip()
+                        if not location:
+                            raise ValueError(f"重定向响应缺少 Location（HTTP {response.status}）")
+                        next_url = urljoin(current_url, location)
+                        current_url = self._validate_download_url(next_url, enforce_ssrf=enforce_ssrf)
+                        continue
+
+                    response.raise_for_status()
+                    return await self._read_capped(response, read_config.max_download_bytes)
+
+        raise ValueError(f"下载重定向次数超过上限（{_MAX_DOWNLOAD_REDIRECTS}）")
 
     async def _fetch_via_napcat(self, file_id: str) -> bytes:
         """通过 NapCat OneBot ``get_file`` action 获取文件
 
         对返回数据做多字段兜底：优先 ``base64``，其次 ``url`` 直链下载，最后本地 ``file`` 路径读取
         （本地路径受 ``allowed_local_prefixes`` 白名单约束）。
+
+        说明：此处直接 HTTP 调用 NapCat，未走 SDK ``api.call``——因 ``get_file`` 常返回
+        较大 base64/文件体，不适配器通道；``http_base_url`` 应仅指向可信的本机 NapCat。
+        NapCat 返回的 ``url`` 兜底下载关闭 SSRF 拦截（常见为 127.0.0.1 缓存地址）。
         """
 
         napcat_config = self.config.napcat
@@ -918,7 +1093,8 @@ class FileReaderPlugin(MaiBotPlugin):
 
         file_url = str(data.get("url") or "").strip()
         if self._is_http_url(file_url):
-            return await self._download_url(file_url)
+            # NapCat 生成的 URL 常指向本机缓存；不按用户 URL 做私有地址拦截
+            return await self._download_url(file_url, enforce_ssrf=False)
 
         local_path = str(data.get("file") or data.get("path") or "").strip()
         if local_path:

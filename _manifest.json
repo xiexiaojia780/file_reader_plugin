@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.2.8",
+  "version": "1.2.9",
   "name": "文件阅读插件",
   "description": "通过指令或引用文件消息读取纯文本文件，交给 LLM 按要求处理后回复",
   "author": {

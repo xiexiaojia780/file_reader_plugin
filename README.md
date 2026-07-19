@@ -3,7 +3,7 @@
 > 用户通过指令指定文件（NapCat `file_id` 或 `http(s)` 链接），或**引用一条文件消息**，插件按**纯文本**读取后交给 LLM 处理并回复。
 
 - **插件 ID**：`github.xiexiaojia780.file-reader-plugin`
-- **版本**：1.2.8
+- **版本**：1.2.9
 - **作者**：[xiexiaojia780](https://github.com/xiexiaojia780)
 - **仓库**：[https://github.com/xiexiaojia780/file_reader_plugin](https://github.com/xiexiaojia780/file_reader_plugin)
 - **License**：`GPL-3.0-or-later`（与 `_manifest.json` / 根目录 `LICENSE` 一致）
@@ -57,11 +57,17 @@ file_reader_plugin/
 
 | 来源 | 行为 |
 |------|------|
-| `http://` / `https://` | 插件直接下载（有大小上限） |
+| `http://` / `https://` | 插件直接下载（有大小上限；**默认拦截私有/本地地址防 SSRF**） |
 | 引用/回复文件消息 | `get_msg` 取原消息 → 抽 `file_id`/`url` → 再 `get_file` 或直链下载 |
 | 手填 `file_id` | 调 OneBot **HTTP** `POST {http_base_url}/get_file`（**不走 WebSocket**），按 `base64` → `url` → 本地 `file`/`path` 兜底 |
 
-本地路径读取受 `napcat.allowed_local_prefixes` 白名单约束；留空则**禁止**本地路径，只接受 base64/url。
+本地路径读取受 `napcat.allowed_local_prefixes` 白名单约束；留空则**禁止**本地路径，只接受 base64/url。  
+默认白名单仅临时目录（`/tmp`、`/var/tmp`、`C:\Windows\Temp`），**不要**轻易加入 `C:\Users` 等过宽前缀。
+
+#### 安全说明
+
+- **用户 URL SSRF**：`/读文件 https://...` 会在下载前解析主机并拒绝私有/回环/链路本地/云元数据等地址；重定向每一跳也会重新校验。可用 `read.block_private_urls=false` 关闭（仅可信环境），或用 `read.url_allowed_hosts` 限制允许的主机名。
+- **NapCat `get_file`**：因返回体可能较大，当前仍走裸 HTTP，不经 SDK `api.call`。`http_base_url` 应只指向**可信本机** NapCat；其返回的 `url` 兜底下载不套用用户侧私有地址拦截（常见为 127.0.0.1 缓存地址）。若后续 SDK 提供文件下载通道，应优先迁移。
 
 ### LLM 模式
 
@@ -105,14 +111,16 @@ pip install "aiohttp>=3.8" "charset-normalizer>=3.0"
 ```toml
 [plugin]
 enabled = true
-config_version = "1.2.8"
+config_version = "1.2.9"
 
 [napcat]
 # 仅 HTTP；本插件不通过 WebSocket 取文件。端口改成你 NapCat 实际 HTTP 端口。
+# get_file 走裸 HTTP（不经 SDK），请只指向可信本机 NapCat。
 http_base_url = "http://127.0.0.1:3000"
 access_token = ""
 # 允许读取本地路径的目录前缀，逗号分隔；留空则禁止本地路径
-allowed_local_prefixes = "/tmp,/var/tmp,C:\\Windows\\Temp,C:\\Users"
+# 默认仅临时目录；请按实际环境收紧，不要写 C:\Users 这类过宽前缀
+allowed_local_prefixes = "/tmp,/var/tmp,C:\\Windows\\Temp"
 
 [access]
 access_mode = "all"                 # all | whitelist | blacklist（WebUI 下拉）
@@ -131,6 +139,8 @@ use_requirement_templates = true   # 短口令映射稳定任务模板
 use_fixed_tools = true             # 固定 tools 定义，利于前缀稳定
 report_cache_stats = true          # 日志输出 cache 命中率
 report_cache_stats_to_chat = false # true 时聊天里追加 [cache] 统计
+block_private_urls = true          # 拦截用户私有/本地 URL（防 SSRF）
+url_allowed_hosts = ""             # 可选主机白名单，如 cdn.example.com
 
 [model]
 mode = "host"                 # host | external
@@ -160,6 +170,23 @@ max_tokens = 2048
 4. LLM 完成后，把处理结果作为普通文本发回当前聊天。
 5. LLM 失败时回复精简错误信息（完整细节写日志，避免把 API payload 打到群里）。
 
+## 故障排查
+
+| 现象 | 可能原因 | 处理 |
+|------|----------|------|
+| 发了 `/读文件` 没反应 | 插件未启用；命令被权限拦截且 `silent_deny=true` | 检查 WebUI 插件开关、`[plugin].enabled`、`[access]` |
+| 提示无权限 | `access_mode=whitelist/blacklist` 未放行当前用户 | 核对 `user_whitelist` / `user_blacklist`（支持 `123456` 或 `qq:123456`） |
+| 引用文件后提示获取失败 | napcat-adapter 未加载，或 `get_msg` 不可用 | 确认适配器已加载；看插件日志里 `get_msg` / API 调用错误 |
+| `file_id` 取文件失败 | NapCat **HTTP** 未开，或 `http_base_url` 端口不对 | 在 NapCat 开启 HTTP 服务，端口与配置一致（勿照抄示例 `3000`） |
+| 本地路径被拒绝 | 路径不在 `allowed_local_prefixes`，或白名单为空 | 按实际 NapCat 缓存目录追加前缀；**不要**直接写 `C:\Users` 过宽路径 |
+| 私有/内网 URL 被拒绝 | 默认 SSRF 防护（`block_private_urls=true`） | 改用公网 URL；仅可信环境可关拦截，或配置 `url_allowed_hosts` |
+| 提示仅支持纯文本 / 内容为空 | PDF、Office、图片等二进制 | 换成 `.txt` / `.md` / `.json` / 源码等纯文本 |
+| external 模式直接中止 | 未配置 `api_key` | 填写 `[model].api_key`，或将 `mode` 改为 `host` |
+| LLM 处理失败 | 宿主任务名错误 / 外部 API 不可达 | host 检查 `task_name`（任务名不是模型 ID）；external 检查 `api_base_url`、密钥与网络；细节看日志 |
+| 处理完后 bot 又接一句闲聊 | 旧版本未关入库 | 使用 ≥1.2.3；本插件回复默认 `storage_message=False` 并拦截主链 |
+
+更多细节也可对照上文「取文件方式」「安全说明」「限制说明」。
+
 ## 测试
 
 不依赖真实 Host / 网络的 mock 测试：
@@ -170,6 +197,14 @@ python test_model_dispatch.py
 ```
 
 ## 版本记录
+
+### 1.2.9
+
+- **SSRF 防护**：用户提供的 `http(s)` URL 默认拦截私有/本地/链路本地/云元数据等地址；重定向每跳重新校验
+- 新增配置 `read.block_private_urls`（默认 true）、`read.url_allowed_hosts`（可选主机白名单）
+- NapCat `get_file` 返回的 `url` 兜底下载不套用用户侧私有地址拦截（本机缓存常见场景）
+- 收紧默认 `allowed_local_prefixes`：移除 `C:\Users`，仅保留临时目录；README/config 补充安全说明
+- 文档标明 `get_file` 走裸 HTTP、不经 SDK 的原因与后续迁移建议
 
 ### 1.2.8
 

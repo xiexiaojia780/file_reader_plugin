@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import socket
 import sys
 import types
 from pathlib import Path
@@ -459,6 +460,120 @@ async def test_is_http_url() -> None:
     print("[is-http-url] OK")
 
 
+async def test_ssrf_blocks_private_urls() -> None:
+    print("[ssrf-block] 启动")
+    plugin = _make_plugin(
+        _host_model(),
+        read=ReadConfig(
+            max_chars=20000,
+            max_download_bytes=5_000_000,
+            timeout_seconds=30,
+            default_requirement="概括",
+            block_private_urls=True,
+            url_allowed_hosts="",
+        ),
+    )
+
+    blocked = [
+        "http://127.0.0.1/secret",
+        "http://127.0.0.1:8080/f",
+        "http://localhost/x",
+        "http://[::1]/",
+        "http://10.0.0.1/a",
+        "http://192.168.1.1/b",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://172.16.0.5/c",
+        "http://0.0.0.0/",
+        "http://user:pass@example.com/x",  # 凭据
+    ]
+    for url in blocked:
+        try:
+            plugin._validate_download_url(url, enforce_ssrf=True)
+            raise AssertionError(f"应拦截 URL：{url}")
+        except ValueError as exc:
+            assert "拒绝" in str(exc) or "不允许" in str(exc) or "仅支持" in str(exc) or "主机" in str(exc), (
+                f"拦截文案异常 url={url} exc={exc}"
+            )
+
+    # 公网字面量 IP 应通过校验（不发起真实请求）
+    ok_url = plugin._validate_download_url("https://1.1.1.1/cdn-cgi/trace", enforce_ssrf=True)
+    assert ok_url.startswith("https://1.1.1.1")
+
+    # enforce_ssrf=False 时允许本机（NapCat 兜底场景）
+    local_ok = plugin._validate_download_url("http://127.0.0.1:3000/cache/a.txt", enforce_ssrf=False)
+    assert "127.0.0.1" in local_ok
+
+    print("[ssrf-block] OK")
+
+
+async def test_ssrf_host_whitelist() -> None:
+    print("[ssrf-whitelist] 启动")
+    plugin = _make_plugin(
+        _host_model(),
+        read=ReadConfig(
+            max_chars=20000,
+            max_download_bytes=5_000_000,
+            timeout_seconds=30,
+            default_requirement="概括",
+            block_private_urls=True,
+            url_allowed_hosts="cdn.example.com,files.example.org",
+        ),
+    )
+    # mock DNS：白名单主机解析到公网 IP，避免依赖真实解析
+    public_ai = [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 443))]
+    with patch("plugin.socket.getaddrinfo", return_value=public_ai):
+        plugin._validate_download_url("https://cdn.example.com/a.txt", enforce_ssrf=True)
+    try:
+        plugin._validate_download_url("https://evil.example.com/a.txt", enforce_ssrf=True)
+        raise AssertionError("非白名单主机应被拒绝")
+    except ValueError as exc:
+        assert "白名单" in str(exc)
+    print("[ssrf-whitelist] OK")
+
+
+async def test_download_url_blocks_ssrf_before_request() -> None:
+    print("[ssrf-download] 启动")
+    plugin = _make_plugin(
+        _host_model(),
+        read=ReadConfig(
+            max_chars=20000,
+            max_download_bytes=5_000_000,
+            timeout_seconds=30,
+            default_requirement="概括",
+            block_private_urls=True,
+        ),
+    )
+    fake_session = _mock_aiohttp_session({"ok": True})
+    with patch("plugin.aiohttp.ClientSession", return_value=fake_session):
+        try:
+            await plugin._download_url("http://127.0.0.1:9/secret", enforce_ssrf=True)
+            raise AssertionError("应在发起请求前拦截 SSRF")
+        except ValueError as exc:
+            assert "拒绝" in str(exc) or "本地" in str(exc) or "私有" in str(exc)
+    # 校验失败时不应创建 ClientSession / 发请求
+    fake_session.get.assert_not_called()
+    print("[ssrf-download] OK")
+
+
+async def test_napcat_url_bypass_user_ssrf() -> None:
+    """NapCat get_file 返回的 url 应允许本机地址（enforce_ssrf=False）。"""
+    print("[napcat-url-bypass-ssrf] 启动")
+    plugin = _make_plugin(_host_model())
+    raw = b"from-napcat-url"
+    # get_file 返回 url；_download_url 被 mock，确认调用参数
+    payload = {"status": "ok", "data": {"url": "http://127.0.0.1:3000/cache/x.txt"}}
+    fake_session = _mock_aiohttp_session(payload)
+    plugin._download_url = AsyncMock(return_value=raw)
+    with patch("plugin.aiohttp.ClientSession", return_value=fake_session):
+        data = await plugin._fetch_via_napcat("file-id-url")
+    assert data == raw
+    plugin._download_url.assert_awaited_once()
+    args, kwargs = plugin._download_url.await_args
+    assert args[0] == "http://127.0.0.1:3000/cache/x.txt"
+    assert kwargs.get("enforce_ssrf") is False
+    print("[napcat-url-bypass-ssrf] OK")
+
+
 async def test_safe_summary() -> None:
     print("[safe-summary] 启动")
     long_val = {"a": "x" * 500}
@@ -783,6 +898,10 @@ async def main() -> None:
     await test_fetch_via_napcat_local_denied()
     await test_decode_text_truncation()
     await test_is_http_url()
+    await test_ssrf_blocks_private_urls()
+    await test_ssrf_host_whitelist()
+    await test_download_url_blocks_ssrf_before_request()
+    await test_napcat_url_bypass_user_ssrf()
     await test_safe_summary()
     await test_missing_file_ref_usage()
     await test_split_body_with_context()
